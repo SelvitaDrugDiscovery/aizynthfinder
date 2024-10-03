@@ -224,6 +224,7 @@ class ReactionTree:
         self,
         in_stock_colors: Optional[FrameColors] = None,
         show_all: bool = True,
+        inverse: bool = False,
     ) -> PilImage:
         """
         Return a pictorial representation of the route
@@ -233,7 +234,7 @@ class ReactionTree:
         :return: the image of the route
         """
         factory = RouteImageFactory(
-            self.to_dict(), in_stock_colors=in_stock_colors, show_all=show_all
+            self.to_dict(), in_stock_colors=in_stock_colors, show_all=show_all, inverse_horizontal=inverse
         )
         return factory.image
 
