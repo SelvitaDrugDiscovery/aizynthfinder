@@ -254,12 +254,13 @@ def make_visjs_page(
 
 class RouteImageFactory:
     """
-    Factory class for drawing a route
+    Factory class for drawing a route.
 
     :param route: the dictionary representation of the route
     :param in_stock_colors: the colors around molecules, defaults to {True: "green", False: "orange"}
     :param show_all: if True, also show nodes that are marked as hidden
     :param margin: the margin between images
+    :param inverse_horizontal: if True, draw with the root on the left and children expanding to the right.
     """
 
     def __init__(
@@ -268,6 +269,7 @@ class RouteImageFactory:
         in_stock_colors: FrameColors = None,
         show_all: bool = True,
         margin: int = 100,
+        inverse_horizontal: bool = True  # New flag for horizontal inversion
     ) -> None:
         in_stock_colors = in_stock_colors or {
             True: "green",
@@ -275,10 +277,11 @@ class RouteImageFactory:
         }
         self.show_all: bool = show_all
         self.margin: int = margin
+        self.inverse_horizontal: bool = inverse_horizontal  # Store the inversion flag
 
         self._stock_lookup: StrDict = {}
         self._mol_lookup: StrDict = {}
-        self._extract_molecules(route)
+        self._extract_molecules(route)  # Correctly implement this method
         images = molecules_to_images(
             list(self._mol_lookup.values()),
             [in_stock_colors[val] for val in self._stock_lookup.values()],
@@ -288,11 +291,15 @@ class RouteImageFactory:
         self._mol_tree = self._extract_mol_tree(route)
         self._add_effective_size(self._mol_tree)
 
-        pos0 = (
-            self._mol_tree["eff_width"] - self._mol_tree["image"].width + self.margin,
-            int(self._mol_tree["eff_height"] * 0.5)
-            - int(self._mol_tree["image"].height * 0.5),
-        )
+        # Set the initial position based on whether inversion is applied
+        if self.inverse_horizontal:
+            pos0 = (self.margin, int(self._mol_tree["eff_height"] * 0.5) - int(self._mol_tree["image"].height * 0.5))
+        else:
+            pos0 = (
+                self._mol_tree["eff_width"] - self._mol_tree["image"].width + self.margin,
+                int(self._mol_tree["eff_height"] * 0.5) - int(self._mol_tree["image"].height * 0.5),
+            )
+
         self._add_pos(self._mol_tree, pos0)
 
         self.image = Image.new(
@@ -303,6 +310,29 @@ class RouteImageFactory:
         self._draw = ImageDraw.Draw(self.image)
         self._make_image(self._mol_tree)
         self.image = crop_image(self.image)
+
+    def _extract_molecules(self, tree_dict: StrDict) -> None:
+        """
+        Recursive method to extract molecules and store them in _mol_lookup and _stock_lookup.
+        """
+        if tree_dict["type"] == "mol":
+            self._stock_lookup[tree_dict["smiles"]] = tree_dict.get("in_stock", False)
+            self._mol_lookup[tree_dict["smiles"]] = Molecule(smiles=tree_dict["smiles"])
+        for child in tree_dict.get("children", []):
+            self._extract_molecules(child)
+
+    def _extract_mol_tree(self, tree_dict: StrDict) -> StrDict:
+        dict_ = {
+            "smiles": tree_dict["smiles"],
+            "image": self._image_lookup[tree_dict["smiles"]],
+        }
+        if tree_dict.get("children"):
+            dict_["children"] = [
+                self._extract_mol_tree(grandchild)
+                for grandchild in tree_dict.get("children")[0]["children"]  # type: ignore
+                if not (grandchild.get("hide", False) and not self.show_all)
+            ]
+        return dict_
 
     def _add_effective_size(self, tree_dict: StrDict) -> None:
         children = tree_dict.get("children", [])
@@ -334,9 +364,13 @@ class RouteImageFactory:
         children_height = sum(
             child["eff_height"] for child in children
         ) + self.margin * (len(children) - 1)
-        childen_leftmost = min(
-            pos[0] - self.margin - child["image"].width for child in children
-        )
+
+        # If inverted, children are placed to the right of the parent
+        if self.inverse_horizontal:
+            children_leftmost = pos[0] + tree_dict["image"].width + self.margin
+        else:
+            children_leftmost = pos[0] - self.margin - max(child["image"].width for child in children)
+
         child_y = mid_y - int(children_height * 0.5)  # Top-most edge of children
         child_ys = []
         # Now compute first guess of y-pos for children
@@ -346,8 +380,12 @@ class RouteImageFactory:
             child_y += self.margin + child["eff_height"]
 
         for idx, (child, child_y0) in enumerate(zip(children, child_ys)):
-            child_x = childen_leftmost  # pos[0] - self.margin - child["image"].width
+            if self.inverse_horizontal:
+                child_x = children_leftmost  # Place children to the right of the parent
+            else:
+                child_x = children_leftmost  # Place children to the left of the parent
             child_y = child_y0
+
             # Overwrite first guess if child does not have any children
             if not child.get("children") and idx == 0 and len(children) > 1:
                 child_y = child_ys[idx + 1] - self.margin - child["image"].height
@@ -357,51 +395,46 @@ class RouteImageFactory:
                 )
             self._add_pos(child, (child_x, child_y))
 
-    def _extract_mol_tree(self, tree_dict: StrDict) -> StrDict:
-        dict_ = {
-            "smiles": tree_dict["smiles"],
-            "image": self._image_lookup[tree_dict["smiles"]],
-        }
-        if tree_dict.get("children"):
-            dict_["children"] = [
-                self._extract_mol_tree(grandchild)
-                for grandchild in tree_dict.get("children")[0]["children"]  # type: ignore
-                if not (grandchild.get("hide", False) and not self.show_all)
-            ]
-        return dict_
-
-    def _extract_molecules(self, tree_dict: StrDict) -> None:
-        if tree_dict["type"] == "mol":
-            self._stock_lookup[tree_dict["smiles"]] = tree_dict.get("in_stock", False)
-            self._mol_lookup[tree_dict["smiles"]] = Molecule(smiles=tree_dict["smiles"])
-        for child in tree_dict.get("children", []):
-            self._extract_molecules(child)
-
     def _make_image(self, tree_dict: StrDict) -> None:
+        # Paste the current molecule's image
         self.image.paste(tree_dict["image"], (tree_dict["left"], tree_dict["top"]))
         children = tree_dict.get("children")
         if not children:
             return
 
-        children_right = max(child["left"] + child["image"].width for child in children)
-        mid_x = children_right + int(0.5 * (tree_dict["left"] - children_right))
+        # Midpoint of the parent image's height
         mid_y = tree_dict["top"] + int(tree_dict["image"].height * 0.5)
 
-        self._draw.line((tree_dict["left"], mid_y, mid_x, mid_y), fill="black")
+        if self.inverse_horizontal:
+            # For inverted mode, determine where to draw the horizontal line
+            parent_right_edge = tree_dict["left"] + tree_dict["image"].width
+            children_left = min(child["left"] for child in children)
+            mid_x = parent_right_edge + int((children_left - parent_right_edge) * 0.5)
+        else:
+            # For normal mode, determine where to draw the horizontal line
+            children_right = max(child["left"] + child["image"].width for child in children)
+            mid_x = tree_dict["left"] - int((tree_dict["left"] - children_right) * 0.5)
+
+        # Draw the horizontal line from the parent to the midpoint
+        self._draw.line(
+            (tree_dict["left"] + (self.inverse_horizontal * tree_dict["image"].width), mid_y, mid_x, mid_y),
+            fill="black"
+        )
+
+        # For each child, calculate their midpoints and connect lines
         for child in children:
-            self._make_image(child)
-            child_mid_y = child["top"] + int(0.5 * child["image"].height)
+            self._make_image(child)  # Recursive call for children
+            child_mid_y = child["top"] + int(child["image"].height * 0.5)
+
+            # Draw vertical lines between the parent and child nodes
             self._draw.line(
                 (
-                    mid_x,
-                    mid_y,
-                    mid_x,
-                    child_mid_y,
-                    child["left"] + child["image"].width,
-                    child_mid_y,
+                    mid_x, mid_y,  # Start at midpoint of parent
+                    mid_x, child_mid_y,  # Vertical to child
+                    child["left"] + (0 if self.inverse_horizontal else child["image"].width), child_mid_y
                 ),
-                fill="black",
+                fill="black"
             )
-        self._draw.ellipse(
-            (mid_x - 8, mid_y - 8, mid_x + 8, mid_y + 8), fill="black", outline="black"
-        )
+
+        # Draw a black dot at the intersection point (horizontal midpoint)
+        self._draw.ellipse((mid_x - 8, mid_y - 8, mid_x + 8, mid_y + 8), fill="black", outline="black")
