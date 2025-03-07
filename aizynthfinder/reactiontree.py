@@ -268,7 +268,8 @@ class ReactionTree:
             dict_["in_stock"] = self.in_stock(node)
         elif isinstance(node, FixedRetroReaction):
             dict_["is_reaction"] = True
-            dict_["metadata"] = dict(node.metadata)
+            if include_metadata:
+                dict_["metadata"] = dict(node.metadata)
         else:
             raise ValueError(
                 f"This is an invalid reaction tree. Unknown node type {type(node)}"
